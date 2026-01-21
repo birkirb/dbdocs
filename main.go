@@ -89,6 +89,7 @@ type databaseDocumentation struct {
 	database   string
 	schema     string
 	dbComments *comments
+	enumTypes  map[string]bool // Cache of enum type names
 }
 
 func new(username, password, hostname, port, database, schema string) (*databaseDocumentation, error) {
@@ -102,6 +103,7 @@ func new(username, password, hostname, port, database, schema string) (*database
 		database:   database,
 		schema:     schema,
 		dbComments: newComments(),
+		enumTypes:  make(map[string]bool),
 	}
 	dbd.resetBuffer()
 	var err error
@@ -114,6 +116,11 @@ func new(username, password, hostname, port, database, schema string) (*database
 		safeConnStr := fmt.Sprintf("host=%s port=%s user=%s password=*** dbname=%s sslmode=disable",
 			hostname, port, username, database)
 		return nil, fmt.Errorf("failed to open database connection to %s: %w", safeConnStr, err)
+	}
+	// Pre-fetch enum types for the schema (after connection is established)
+	if err := dbd.loadEnumTypes(); err != nil {
+		dbd.db.Close()
+		return nil, fmt.Errorf("failed to load enum types: %w", err)
 	}
 	return &dbd, nil
 }
@@ -191,25 +198,48 @@ func (dbd *databaseDocumentation) handleText(text string, listLines bool) {
 }
 
 type parser struct {
-	inNotes bool
+	inNotes      bool
+	notesContent string
 }
 
-func (dbd *databaseDocumentation) handleExisting(existingDoc string) error {
+func (dbd *databaseDocumentation) handleExisting(existingDoc string) (bool, error) {
 	data, err := os.ReadFile(existingDoc)
 	if err != nil {
-		return fmt.Errorf("failed to read existing Markdown file %q: %w", existingDoc, err)
+		return false, fmt.Errorf("failed to read existing Markdown file %q: %w", existingDoc, err)
 	}
 	p := parser{}
-	for _, line := range strings.Split(string(data), "\n") {
+	lines := strings.Split(string(data), "\n")
+	inNotesSection := false
+	for _, line := range lines {
 		if strings.HasPrefix(line, "## Notes") {
+			inNotesSection = true
 			p.inNotes = true
 			continue
 		}
-		if p.inNotes {
-			dbd.Write("\n" + line)
+		if inNotesSection {
+			// Check if we hit another section
+			if strings.HasPrefix(line, "##") {
+				break
+			}
+			p.notesContent += line + "\n"
 		}
 	}
-	return nil
+
+	// Check if Notes section is empty or only contains whitespace/placeholders
+	notesTrimmed := strings.TrimSpace(p.notesContent)
+	isEmpty := notesTrimmed == "" ||
+		strings.Contains(notesTrimmed, "<Please insert") ||
+		strings.Contains(notesTrimmed, "<insert") ||
+		strings.Contains(notesTrimmed, "<add description")
+
+	if p.inNotes {
+		if !isEmpty {
+			// Write existing notes
+			dbd.Write("\n" + strings.TrimSpace(p.notesContent))
+		}
+	}
+
+	return isEmpty, nil
 }
 
 func (dbd *databaseDocumentation) getColumnComments() error {
@@ -555,7 +585,7 @@ func (dbd *databaseDocumentation) documentIndexes(table string) error {
 	return nil
 }
 
-func (dbd *databaseDocumentation) documentTable(table string) error {
+func (dbd *databaseDocumentation) documentTable(table string, tableData *[][]string) error {
 	query := `
 	SELECT
 		a.attname as field,
@@ -627,6 +657,10 @@ func (dbd *databaseDocumentation) documentTable(table string) error {
 
 		data = append(data, []string{dbField, dbType, dbNull, dbKey, defaultVal, dbExtra})
 	}
+
+	// Store table data for template generation
+	*tableData = data
+
 	header := []string{"Field", "Type", "Null", "Key", "Default", "Extra"}
 	dbd.renderTable(header, data)
 	dbd.Write("\n\n")
@@ -713,6 +747,128 @@ func (dbd *databaseDocumentation) cleanDefaultValue(dbDefault sql.NullString) st
 	}
 
 	return defaultVal
+}
+
+// fetchEnumValues retrieves enum values for a given enum type
+func (dbd *databaseDocumentation) fetchEnumValues(enumType string) ([]string, error) {
+	// Extract enum type name (handle schema.type format)
+	typeParts := strings.Split(enumType, ".")
+	var typeName, typeSchema string
+	if len(typeParts) == 2 {
+		typeSchema = typeParts[0]
+		typeName = typeParts[1]
+	} else {
+		typeSchema = dbd.schema
+		typeName = enumType
+	}
+
+	query := `
+	SELECT e.enumlabel
+	FROM pg_enum e
+	JOIN pg_type t ON e.enumtypid = t.oid
+	JOIN pg_namespace n ON t.typnamespace = n.oid
+	WHERE n.nspname = $1 AND t.typname = $2
+	ORDER BY e.enumsortorder
+	`
+	rows, err := dbd.db.Query(query, typeSchema, typeName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query enum values for %q: %w", enumType, err)
+	}
+	defer rows.Close()
+
+	var values []string
+	for rows.Next() {
+		var label string
+		if err := rows.Scan(&label); err != nil {
+			return nil, fmt.Errorf("failed to scan enum value: %w", err)
+		}
+		values = append(values, label)
+	}
+	return values, nil
+}
+
+// loadEnumTypes loads all enum types from the schema into cache
+func (dbd *databaseDocumentation) loadEnumTypes() error {
+	query := `
+	SELECT t.typname, n.nspname
+	FROM pg_type t
+	JOIN pg_namespace n ON t.typnamespace = n.oid
+	WHERE t.typtype = 'e'
+		AND (n.nspname = $1 OR n.nspname = 'pg_catalog')
+	`
+	rows, err := dbd.db.Query(query, dbd.schema)
+	if err != nil {
+		return fmt.Errorf("failed to query enum types: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var typeName, typeSchema string
+		if err := rows.Scan(&typeName, &typeSchema); err != nil {
+			return fmt.Errorf("failed to scan enum type: %w", err)
+		}
+		// Store both with and without schema prefix
+		dbd.enumTypes[typeName] = true
+		if typeSchema != dbd.schema {
+			dbd.enumTypes[typeSchema+"."+typeName] = true
+		}
+	}
+	return nil
+}
+
+// isEnumType checks if a PostgreSQL type is an enum
+func (dbd *databaseDocumentation) isEnumType(columnType string) bool {
+	// Remove any array notation
+	columnType = strings.TrimSuffix(columnType, "[]")
+	// Check cache first
+	if dbd.enumTypes[columnType] {
+		return true
+	}
+	// Check if it's a base type (not an enum)
+	baseTypes := map[string]bool{
+		"varchar": true, "char": true, "text": true,
+		"int": true, "integer": true, "bigint": true, "smallint": true,
+		"numeric": true, "decimal": true, "real": true, "double precision": true,
+		"boolean": true, "bool": true,
+		"date": true, "time": true, "timestamp": true, "timestamptz": true,
+		"uuid": true, "json": true, "jsonb": true, "bytea": true,
+	}
+	return !baseTypes[strings.ToLower(columnType)]
+}
+
+// generateTemplate generates a template for the Notes section
+func (dbd *databaseDocumentation) generateTemplate(table string, tableData [][]string) error {
+	dbd.Write("\n\n<Please insert table description here>\n\n")
+	dbd.Write("## Columns\n\n")
+
+	for _, row := range tableData {
+		columnName := row[0]
+		columnType := row[1]
+
+		// Skip columns that already have comments
+		if comment := dbd.dbComments.get(dbd.database, table, columnName); comment != "" {
+			continue
+		}
+
+		dbd.Write(fmt.Sprintf("* `%s`: <insert column documentation here>", columnName))
+
+		// Check if this column is an enum type
+		if dbd.isEnumType(columnType) {
+			enumValues, err := dbd.fetchEnumValues(columnType)
+			if err == nil && len(enumValues) > 0 {
+				dbd.Write("\n\n")
+				// Generate enum table
+				enumData := [][]string{}
+				for i, val := range enumValues {
+					enumData = append(enumData, []string{fmt.Sprintf("%d", i), val, "<add description here>"})
+				}
+				dbd.renderTable([]string{"id", "name", "description"}, enumData)
+			}
+		}
+		dbd.Write("\n")
+	}
+
+	return nil
 }
 
 func (dbd *databaseDocumentation) fetchTables(tables []string) (*[]string, error) {
@@ -856,7 +1012,8 @@ func main() {
 		}
 
 		// create the table documentation
-		if err := dbd.documentTable(table); err != nil {
+		var tableData [][]string
+		if err := dbd.documentTable(table, &tableData); err != nil {
 			errors = append(errors, fmt.Errorf("table %q: failed to document table structure: %w", table, err))
 			bar.Increment()
 			continue
@@ -873,9 +1030,24 @@ func main() {
 
 		// merge notes in case we have a previous file
 		existingDoc := *output + table + ".md"
+		needsTemplate := false
 		if _, err := os.Stat(existingDoc); err == nil {
-			if err := dbd.handleExisting(existingDoc); err != nil {
+			isEmpty, err := dbd.handleExisting(existingDoc)
+			if err != nil {
 				errors = append(errors, fmt.Errorf("table %q: failed to merge existing documentation: %w", table, err))
+				bar.Increment()
+				continue
+			}
+			needsTemplate = isEmpty
+		} else {
+			// File doesn't exist, need template
+			needsTemplate = true
+		}
+
+		// Generate template if needed
+		if needsTemplate {
+			if err := dbd.generateTemplate(table, tableData); err != nil {
+				errors = append(errors, fmt.Errorf("table %q: failed to generate template: %w", table, err))
 				bar.Increment()
 				continue
 			}
