@@ -1,1 +1,4 @@
 dbdocs
+bin/
+test/
+dist/
