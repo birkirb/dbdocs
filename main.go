@@ -202,14 +202,15 @@ type parser struct {
 	notesContent string
 }
 
-func (dbd *databaseDocumentation) handleExisting(existingDoc string) (bool, error) {
+func (dbd *databaseDocumentation) handleExisting(existingDoc string) error {
 	data, err := os.ReadFile(existingDoc)
 	if err != nil {
-		return false, fmt.Errorf("failed to read existing Markdown file %q: %w", existingDoc, err)
+		return fmt.Errorf("failed to read existing Markdown file %q: %w", existingDoc, err)
 	}
 	p := parser{}
 	lines := strings.Split(string(data), "\n")
 	inNotesSection := false
+	
 	for _, line := range lines {
 		if strings.HasPrefix(line, "## Notes") {
 			inNotesSection = true
@@ -217,29 +218,17 @@ func (dbd *databaseDocumentation) handleExisting(existingDoc string) (bool, erro
 			continue
 		}
 		if inNotesSection {
-			// Check if we hit another section
-			if strings.HasPrefix(line, "##") {
-				break
-			}
+			// Collect ALL content after ## Notes, including other sections like ## Columns
 			p.notesContent += line + "\n"
 		}
 	}
 
-	// Check if Notes section is empty or only contains whitespace/placeholders
-	notesTrimmed := strings.TrimSpace(p.notesContent)
-	isEmpty := notesTrimmed == "" ||
-		strings.Contains(notesTrimmed, "<Please insert") ||
-		strings.Contains(notesTrimmed, "<insert") ||
-		strings.Contains(notesTrimmed, "<add description")
-
+	// Always preserve existing content if Notes section exists
 	if p.inNotes {
-		if !isEmpty {
-			// Write existing notes
-			dbd.Write("\n" + strings.TrimSpace(p.notesContent))
-		}
+		dbd.Write("\n" + p.notesContent)
 	}
-
-	return isEmpty, nil
+	
+	return nil
 }
 
 func (dbd *databaseDocumentation) getColumnComments() error {
@@ -897,7 +886,12 @@ func (dbd *databaseDocumentation) fetchTables(tables []string) (*[]string, error
 }
 
 func (dbd *databaseDocumentation) writeFile(output, table string) error {
-	filename := output + table + ".md"
+	// Ensure output path ends with a directory separator
+	outputPath := output
+	if outputPath != "" && !strings.HasSuffix(outputPath, "/") && !strings.HasSuffix(outputPath, string(os.PathSeparator)) {
+		outputPath += "/"
+	}
+	filename := outputPath + table + ".md"
 	if err := os.WriteFile(filename, dbd.buffer.Bytes(), 0644); err != nil {
 		return fmt.Errorf("failed to write file %q: %w", filename, err)
 	}
@@ -1029,30 +1023,27 @@ func main() {
 		dbd.Write("## Notes")
 
 		// merge notes in case we have a previous file
-		existingDoc := *output + table + ".md"
-		needsTemplate := false
+		outputPath := *output
+		if outputPath != "" && !strings.HasSuffix(outputPath, "/") && !strings.HasSuffix(outputPath, string(os.PathSeparator)) {
+			outputPath += "/"
+		}
+		existingDoc := outputPath + table + ".md"
 		if _, err := os.Stat(existingDoc); err == nil {
-			isEmpty, err := dbd.handleExisting(existingDoc)
-			if err != nil {
+			// File exists - preserve existing content
+			if err := dbd.handleExisting(existingDoc); err != nil {
 				errors = append(errors, fmt.Errorf("table %q: failed to merge existing documentation: %w", table, err))
 				bar.Increment()
 				continue
 			}
-			needsTemplate = isEmpty
 		} else {
-			// File doesn't exist, need template
-			needsTemplate = true
-		}
-
-		// Generate template if needed
-		if needsTemplate {
+			// File doesn't exist - generate template on first run
 			if err := dbd.generateTemplate(table, tableData); err != nil {
 				errors = append(errors, fmt.Errorf("table %q: failed to generate template: %w", table, err))
 				bar.Increment()
 				continue
 			}
 		}
-		if err := dbd.writeFile(*output, table); err != nil {
+		if err := dbd.writeFile(outputPath, table); err != nil {
 			errors = append(errors, fmt.Errorf("table %q: failed to write output file: %w", table, err))
 			bar.Increment()
 			continue
