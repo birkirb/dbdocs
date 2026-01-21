@@ -225,7 +225,9 @@ func (dbd *databaseDocumentation) handleExisting(existingDoc string) error {
 
 	// Always preserve existing content if Notes section exists
 	if p.inNotes {
-		dbd.Write("\n" + p.notesContent)
+		// Trim trailing newlines to avoid accumulating them on each run
+		content := strings.TrimRight(p.notesContent, "\n")
+		dbd.Write("\n" + content)
 	}
 	
 	return nil
@@ -892,7 +894,12 @@ func (dbd *databaseDocumentation) writeFile(output, table string) error {
 		outputPath += "/"
 	}
 	filename := outputPath + table + ".md"
-	if err := os.WriteFile(filename, dbd.buffer.Bytes(), 0644); err != nil {
+	
+	// Get buffer content and ensure it ends with exactly one newline
+	content := dbd.buffer.Bytes()
+	contentStr := strings.TrimRight(string(content), "\n") + "\n"
+	
+	if err := os.WriteFile(filename, []byte(contentStr), 0644); err != nil {
 		return fmt.Errorf("failed to write file %q: %w", filename, err)
 	}
 	return nil
