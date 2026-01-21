@@ -1,4 +1,4 @@
-# PostgreSQL Database Documentation Generator
+# Database Documentation Generator
 
 A tool to generate Markdown documentation for PostgreSQL database schemas.
 
@@ -8,6 +8,7 @@ A tool to generate Markdown documentation for PostgreSQL database schemas.
 - Extracts column comments from PostgreSQL `pg_description` system catalog
 - Extracts index and constraint information
 - Extracts table comments
+- Creates a template for documentation on the first run
 - Preserves manual documentation (everything after `## Notes`) when regenerating
 
 ## Installation
