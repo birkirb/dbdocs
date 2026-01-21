@@ -29,51 +29,58 @@ type columnComment struct {
 }
 
 type comments struct {
-	data map[string]map[string][]columnComment // slice to maintain order
+	// Map structure: database -> table -> column -> comment (for O(1) lookup)
+	lookup map[string]map[string]map[string]string
+	// Slice structure: database -> table -> []columnComment (to maintain order for getAll)
+	ordered map[string]map[string][]columnComment
 }
 
 func (c *comments) set(database, table, column, comment string) {
-	if _, ok := c.data[database]; !ok {
-		c.data[database] = map[string][]columnComment{}
+	// Initialize maps if needed
+	if _, ok := c.lookup[database]; !ok {
+		c.lookup[database] = map[string]map[string]string{}
+		c.ordered[database] = map[string][]columnComment{}
 	}
-	if _, ok := c.data[database][table]; !ok {
-		c.data[database][table] = []columnComment{}
+	if _, ok := c.lookup[database][table]; !ok {
+		c.lookup[database][table] = map[string]string{}
+		c.ordered[database][table] = []columnComment{}
 	}
-	c.data[database][table] = append(c.data[database][table], columnComment{column, comment})
+	// Store in both structures
+	c.lookup[database][table][column] = comment
+	c.ordered[database][table] = append(c.ordered[database][table], columnComment{column, comment})
 }
 
 func (c *comments) get(database, table, column string) string {
-	if _, ok := c.data[database]; ok {
-		if _, ok := c.data[database][table]; ok {
-			for _, cComment := range c.data[database][table] {
-				if cComment.column == column {
-					return cComment.comment
-				}
-			}
+	if dbMap, ok := c.lookup[database]; ok {
+		if tableMap, ok := dbMap[table]; ok {
+			return tableMap[column]
 		}
 	}
 	return ""
 }
 
 func (c *comments) has(database, table string) bool {
-	if _, ok := c.data[database]; ok {
-		_, ok := c.data[database][table]
+	if dbMap, ok := c.lookup[database]; ok {
+		_, ok := dbMap[table]
 		return ok
 	}
 	return false
 }
 
 func (c *comments) getAll(database, table string) []columnComment {
-	if _, ok := c.data[database]; ok {
-		if _, ok := c.data[database][table]; ok {
-			return c.data[database][table]
+	if dbMap, ok := c.ordered[database]; ok {
+		if tableComments, ok := dbMap[table]; ok {
+			return tableComments
 		}
 	}
 	return []columnComment{}
 }
 
 func newComments() *comments {
-	return &comments{data: map[string]map[string][]columnComment{}}
+	return &comments{
+		lookup:  map[string]map[string]map[string]string{},
+		ordered: map[string]map[string][]columnComment{},
+	}
 }
 
 type databaseDocumentation struct {
@@ -98,12 +105,15 @@ func new(username, password, hostname, port, database, schema string) (*database
 	}
 	dbd.resetBuffer()
 	var err error
-	// PostgreSQL connection string format
+	// PostgreSQL connection string format (password excluded from error messages for security)
 	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
 		hostname, port, username, password, database)
 	dbd.db, err = sql.Open("postgres", connStr)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open database connection: %+v", err)
+		// Sanitize connection string in error message (don't expose password)
+		safeConnStr := fmt.Sprintf("host=%s port=%s user=%s password=*** dbname=%s sslmode=disable",
+			hostname, port, username, database)
+		return nil, fmt.Errorf("failed to open database connection to %s: %w", safeConnStr, err)
 	}
 	return &dbd, nil
 }
@@ -187,7 +197,7 @@ type parser struct {
 func (dbd *databaseDocumentation) handleExisting(existingDoc string) error {
 	data, err := os.ReadFile(existingDoc)
 	if err != nil {
-		return fmt.Errorf("failed to read existing Markdown file: %+v", err)
+		return fmt.Errorf("failed to read existing Markdown file %q: %w", existingDoc, err)
 	}
 	p := parser{}
 	for _, line := range strings.Split(string(data), "\n") {
@@ -221,14 +231,14 @@ func (dbd *databaseDocumentation) getColumnComments() error {
 	`
 	rows, err := dbd.db.Query(query, dbd.schema)
 	if err != nil {
-		return fmt.Errorf("failed to fetch column comments: %+v", err)
+		return fmt.Errorf("failed to fetch column comments from schema %q: %w", dbd.schema, err)
 	}
 	defer rows.Close()
 
 	for rows.Next() {
 		var tableName, columnName, columnComment sql.NullString
 		if err := rows.Scan(&tableName, &columnName, &columnComment); err != nil {
-			return fmt.Errorf("failed to scan column comments row: %+v", err)
+			return fmt.Errorf("failed to scan column comment row (table: %q, column: %q): %w", tableName.String, columnName.String, err)
 		}
 		if columnComment.Valid && columnComment.String != "" {
 			dbd.dbComments.set(dbd.database, tableName.String, columnName.String, columnComment.String)
@@ -268,14 +278,14 @@ func (dbd *databaseDocumentation) fetchIndexComments(table string) (map[string]s
 	`
 	rows, err := dbd.db.Query(query, dbd.schema, table)
 	if err != nil {
-		return comments, fmt.Errorf("failed to query index comments from table %s: %+v", table, err)
+		return comments, fmt.Errorf("failed to query index comments from table %q in schema %q: %w", table, dbd.schema, err)
 	}
 	defer rows.Close()
 
 	for rows.Next() {
 		var keyName, indexComment sql.NullString
 		if err := rows.Scan(&keyName, &indexComment); err != nil {
-			return comments, fmt.Errorf("failed to read row from %s: %+v", table, err)
+			return comments, fmt.Errorf("failed to scan index comment row for table %q (index: %q): %w", table, keyName.String, err)
 		}
 		if indexComment.Valid && indexComment.String != "" {
 			comments[keyName.String] = indexComment.String
@@ -355,7 +365,7 @@ func (dbd *databaseDocumentation) documentIndexes(table string) error {
 
 	indexRows, err := dbd.db.Query(indexQuery, dbd.schema, table)
 	if err != nil {
-		return fmt.Errorf("failed to query indexes from table %s: %+v", table, err)
+		return fmt.Errorf("failed to query indexes from table %q in schema %q: %w", table, dbd.schema, err)
 	}
 	defer indexRows.Close()
 
@@ -373,7 +383,7 @@ func (dbd *databaseDocumentation) documentIndexes(table string) error {
 			&sr.indexName, &sr.columnName, &seqInIndex, &sr.constraintName,
 			&constraintType, &sr.isPrimary, &sr.isUnique,
 		); err != nil {
-			return fmt.Errorf("failed to read index row from %s: %+v", table, err)
+			return fmt.Errorf("failed to scan index row for table %q (index: %q): %w", table, sr.indexName, err)
 		}
 		sr.seqNum = seqInIndex
 		if constraintType.Valid {
@@ -470,17 +480,18 @@ func (dbd *databaseDocumentation) documentIndexes(table string) error {
 
 	fkRows, err := dbd.db.Query(fkQuery, dbd.schema, table)
 	if err != nil {
-		return fmt.Errorf("failed to query foreign keys from table %s: %+v", table, err)
+		return fmt.Errorf("failed to query foreign keys from table %q in schema %q: %w", table, dbd.schema, err)
 	}
 	defer fkRows.Close()
 
-	// Group foreign keys by constraint name
+	// Group foreign keys by constraint name, preserving order
 	fkMap := make(map[string]*foreignKey)
+	fkOrder := []string{} // Track order of constraint names
 	for fkRows.Next() {
 		var constraintName, columnName string
 		var referencedTable, referencedColumn sql.NullString
 		if err := fkRows.Scan(&constraintName, &columnName, &referencedTable, &referencedColumn); err != nil {
-			return fmt.Errorf("failed to read foreign key row from %s: %+v", table, err)
+			return fmt.Errorf("failed to scan foreign key row for table %q (constraint: %q): %w", table, constraintName, err)
 		}
 		if referencedTable.Valid && referencedColumn.Valid {
 			if fk, exists := fkMap[constraintName]; exists {
@@ -494,13 +505,17 @@ func (dbd *databaseDocumentation) documentIndexes(table string) error {
 					ref:    ref,
 					column: columnName,
 				}
+				// Track order of first occurrence
+				fkOrder = append(fkOrder, constraintName)
 			}
 		}
 	}
 
-	// Convert map to slice
-	for _, fk := range fkMap {
-		indexesData.foreignKeys = append(indexesData.foreignKeys, *fk)
+	// Convert map to slice in the order they were encountered
+	for _, constraintName := range fkOrder {
+		if fk, exists := fkMap[constraintName]; exists {
+			indexesData.foreignKeys = append(indexesData.foreignKeys, *fk)
+		}
 	}
 
 	// slightly awkward double loop to have primary keys first in SQL query return order
@@ -592,7 +607,7 @@ func (dbd *databaseDocumentation) documentTable(table string) error {
 	`
 	rows, err := dbd.db.Query(query, dbd.schema, table)
 	if err != nil {
-		return fmt.Errorf("failed to describe the table %s: %+v", table, err)
+		return fmt.Errorf("failed to query table structure for %q in schema %q: %w", table, dbd.schema, err)
 	}
 	defer rows.Close()
 
@@ -601,7 +616,7 @@ func (dbd *databaseDocumentation) documentTable(table string) error {
 		var dbField, dbType, dbNull, dbKey, dbExtra string
 		var dbDefault sql.NullString
 		if err := rows.Scan(&dbField, &dbType, &dbNull, &dbKey, &dbDefault, &dbExtra); err != nil {
-			return fmt.Errorf("failed to scan row: %+v", err)
+			return fmt.Errorf("failed to scan column row for table %q (column: %q): %w", table, dbField, err)
 		}
 
 		// Simplify type names for readability
@@ -617,8 +632,12 @@ func (dbd *databaseDocumentation) documentTable(table string) error {
 	dbd.Write("\n\n")
 	if dbd.dbComments.has(dbd.database, table) {
 		dbd.Write("## Column Comments\n\n")
-		for _, cComment := range dbd.dbComments.getAll(dbd.database, table) {
-			dbd.Write(fmt.Sprintf("* `%s`: %s\n", cComment.column, cComment.comment))
+		// Display comments in the same order as columns appear in the table
+		for _, row := range data {
+			columnName := row[0] // Field is the first column
+			if comment := dbd.dbComments.get(dbd.database, table, columnName); comment != "" {
+				dbd.Write(fmt.Sprintf("* `%s`: %s\n", columnName, comment))
+			}
 		}
 		dbd.Write("\n\n")
 	}
@@ -706,13 +725,13 @@ func (dbd *databaseDocumentation) fetchTables(tables []string) (*[]string, error
 		`
 		rows, err := dbd.db.Query(query, dbd.schema)
 		if err != nil {
-			return &tables, fmt.Errorf("failed to list tables: %+v", err)
+			return &tables, fmt.Errorf("failed to list tables from schema %q: %w", dbd.schema, err)
 		}
 
 		var tableName string
 		for rows.Next() {
 			if err := rows.Scan(&tableName); err != nil {
-				return &tables, fmt.Errorf("failed to scan row: %+v", err)
+				return &tables, fmt.Errorf("failed to scan table name row: %w", err)
 			}
 			tables = append(tables, tableName)
 		}
@@ -722,8 +741,9 @@ func (dbd *databaseDocumentation) fetchTables(tables []string) (*[]string, error
 }
 
 func (dbd *databaseDocumentation) writeFile(output, table string) error {
-	if err := os.WriteFile(output+table+".md", dbd.buffer.Bytes(), 0644); err != nil {
-		return fmt.Errorf("failed to write to target file: %+v", err)
+	filename := output + table + ".md"
+	if err := os.WriteFile(filename, dbd.buffer.Bytes(), 0644); err != nil {
+		return fmt.Errorf("failed to write file %q: %w", filename, err)
 	}
 	return nil
 }
@@ -743,14 +763,14 @@ func (dbd *databaseDocumentation) tableComment(table string) error {
 	`
 	rows, err := dbd.db.Query(query, dbd.schema, table)
 	if err != nil {
-		return fmt.Errorf("failed to get comment on table %s: %+v", table, err)
+		return fmt.Errorf("failed to query table comment for %q in schema %q: %w", table, dbd.schema, err)
 	}
 	defer rows.Close()
 	var hadComment bool
 	for rows.Next() {
 		var comment sql.NullString
 		if err := rows.Scan(&comment); err != nil {
-			return fmt.Errorf("failed to scan row: %+v", err)
+			return fmt.Errorf("failed to scan table comment row for %q: %w", table, err)
 		}
 		if !comment.Valid || comment.String == "" {
 			continue
@@ -794,23 +814,35 @@ func main() {
 		*password = promptPassword()
 	}
 
+	// Validate and create output directory
+	if err := os.MkdirAll(*output, 0755); err != nil {
+		log.Fatalf("failed to create output directory %q: %v", *output, err)
+	}
+
 	dbd, err := new(*username, *password, *hostname, *port, *database, *schema)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("failed to initialize database connection: %v", err)
 	}
 	defer dbd.db.Close()
 
 	// fetch tables in case none provided
 	if tables, err = dbd.fetchTables(*tables); err != nil {
-		log.Fatal(err)
+		log.Fatalf("failed to fetch table list: %v", err)
+	}
+
+	if len(*tables) == 0 {
+		log.Fatal("no tables found to document")
 	}
 
 	// fetch table comments
 	if err := dbd.getColumnComments(); err != nil {
-		log.Fatal(err)
+		log.Fatalf("failed to fetch column comments: %v", err)
 	}
 
 	bar := pb.StartNew(len(*tables))
+	var errors []error
+	successCount := 0
+
 	for _, table := range *tables {
 		dbd.resetBuffer()
 
@@ -818,17 +850,23 @@ func main() {
 
 		// optionally fetch the table comment
 		if err := dbd.tableComment(table); err != nil {
-			log.Fatal(err)
+			errors = append(errors, fmt.Errorf("table %q: failed to fetch table comment: %w", table, err))
+			bar.Increment()
+			continue
 		}
 
 		// create the table documentation
 		if err := dbd.documentTable(table); err != nil {
-			log.Fatal(err)
+			errors = append(errors, fmt.Errorf("table %q: failed to document table structure: %w", table, err))
+			bar.Increment()
+			continue
 		}
 
 		// Fetch index information and render in documentation
 		if err := dbd.documentIndexes(table); err != nil {
-			log.Fatal(err)
+			errors = append(errors, fmt.Errorf("table %q: failed to document indexes: %w", table, err))
+			bar.Increment()
+			continue
 		}
 
 		dbd.Write("## Notes")
@@ -837,14 +875,33 @@ func main() {
 		existingDoc := *output + table + ".md"
 		if _, err := os.Stat(existingDoc); err == nil {
 			if err := dbd.handleExisting(existingDoc); err != nil {
-				log.Fatal(err)
+				errors = append(errors, fmt.Errorf("table %q: failed to merge existing documentation: %w", table, err))
+				bar.Increment()
+				continue
 			}
 		}
 		if err := dbd.writeFile(*output, table); err != nil {
-			log.Fatal(err)
+			errors = append(errors, fmt.Errorf("table %q: failed to write output file: %w", table, err))
+			bar.Increment()
+			continue
 		}
+		successCount++
 		bar.Increment()
 	}
 
 	bar.Finish()
+
+	// Report results
+	if len(errors) > 0 {
+		fmt.Fprintf(os.Stderr, "\nErrors encountered:\n")
+		for _, err := range errors {
+			fmt.Fprintf(os.Stderr, "  - %v\n", err)
+		}
+		fmt.Fprintf(os.Stderr, "\nSuccessfully documented %d of %d tables.\n", successCount, len(*tables))
+		if successCount == 0 {
+			os.Exit(1)
+		}
+	} else {
+		fmt.Printf("\nSuccessfully documented %d table(s).\n", successCount)
+	}
 }
