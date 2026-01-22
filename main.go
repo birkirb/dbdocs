@@ -7,7 +7,9 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"runtime/debug"
 	"strings"
+	"time"
 
 	_ "github.com/lib/pq"
 	"github.com/olekukonko/tablewriter"
@@ -17,11 +19,44 @@ import (
 )
 
 var (
-	// VERSION is set by the makefile
+	// VERSION is set by the makefile or from build info
 	VERSION = "v0.0.0"
-	// BUILDDATE is set by the makefile
+	// BUILDDATE is set by the makefile or from build info
 	BUILDDATE = ""
 )
+
+func init() {
+	// Try to get version from Go build info (works with go install)
+	if info, ok := debug.ReadBuildInfo(); ok {
+		// Use module version if available and not "(devel)"
+		if info.Main.Version != "" && info.Main.Version != "(devel)" {
+			VERSION = info.Main.Version
+		}
+		// Try to get build time from build settings
+		for _, setting := range info.Settings {
+			if setting.Key == "vcs.time" {
+				if t, err := time.Parse(time.RFC3339, setting.Value); err == nil {
+					BUILDDATE = t.Format(time.RFC3339)
+				}
+			}
+		}
+		// If version is still default or devel, try to use vcs.revision as fallback
+		if (VERSION == "v0.0.0" || VERSION == "(devel)") && BUILDDATE == "" {
+			for _, setting := range info.Settings {
+				if setting.Key == "vcs.revision" && len(setting.Value) >= 7 {
+					VERSION = "dev-" + setting.Value[:7]
+					// Use current time if no build date available
+					BUILDDATE = time.Now().UTC().Format(time.RFC3339)
+					break
+				}
+			}
+		}
+		// If still no build date, use current time
+		if BUILDDATE == "" && VERSION != "v0.0.0" {
+			BUILDDATE = time.Now().UTC().Format(time.RFC3339)
+		}
+	}
+}
 
 type columnComment struct {
 	column  string

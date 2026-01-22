@@ -13,10 +13,28 @@ A tool to generate Markdown documentation for PostgreSQL database schemas.
 
 ## Installation
 
+### From Source
+
 ```bash
 go mod download
 go build -o dbdocs .
 ```
+
+### Via go install
+
+To install the latest tagged version:
+
+```bash
+go install github.com/birkirb/dbdocs@latest
+```
+
+To install a specific version:
+
+```bash
+go install github.com/birkirb/dbdocs@v1.0.0
+```
+
+**Note:** When installing via `go install`, the version will be automatically detected from git tags. For proper version information, install from a tagged release rather than `@main`.
 
 ## Usage
 
