@@ -1,4 +1,4 @@
-module dbdocs
+module github.com/birkirb/dbdocs
 
 go 1.21
 
