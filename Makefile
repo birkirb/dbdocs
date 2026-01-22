@@ -1,4 +1,4 @@
-VERSION := v1.0.0
+VERSION := v1.0.1
 NAME := dbdocs
 
 BUILDSTRING := $(shell git log --pretty=format:'%h' -n 1 2>/dev/null || echo "unknown")
