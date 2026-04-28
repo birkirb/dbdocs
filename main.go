@@ -245,7 +245,7 @@ func (dbd *databaseDocumentation) handleExisting(existingDoc string) error {
 	p := parser{}
 	lines := strings.Split(string(data), "\n")
 	inNotesSection := false
-	
+
 	for _, line := range lines {
 		if strings.HasPrefix(line, "## Notes") {
 			inNotesSection = true
@@ -264,7 +264,7 @@ func (dbd *databaseDocumentation) handleExisting(existingDoc string) error {
 		content := strings.TrimRight(p.notesContent, "\n")
 		dbd.Write("\n" + content)
 	}
-	
+
 	return nil
 }
 
@@ -929,11 +929,11 @@ func (dbd *databaseDocumentation) writeFile(output, table string) error {
 		outputPath += "/"
 	}
 	filename := outputPath + table + ".md"
-	
+
 	// Get buffer content and ensure it ends with exactly one newline
 	content := dbd.buffer.Bytes()
 	contentStr := strings.TrimRight(string(content), "\n") + "\n"
-	
+
 	if err := os.WriteFile(filename, []byte(contentStr), 0644); err != nil {
 		return fmt.Errorf("failed to write file %q: %w", filename, err)
 	}
@@ -989,6 +989,25 @@ func main() {
 		schema   = flag.StringP("schema", "s", "public", "Schema name")
 		version  = flag.BoolP("version", "v", false, "print the application version and exit")
 	)
+	flag.StringP("env-file", "e", "", fmt.Sprintf("Dotenv file path (DBDOCS_* keys). Relative paths use cwd. Defaults to %q when unset.", defaultEnvFileName))
+
+	envPath, envExplicit, err := resolveEnvFilePath()
+	if err != nil {
+		log.Fatal(err)
+	}
+	data, err := parseEnvFile(envPath)
+	if err != nil {
+		if !envExplicit && os.IsNotExist(err) {
+			// default .env missing; use flag defaults only
+		} else {
+			log.Fatalf("failed to read env file %q: %v", envPath, err)
+		}
+	} else {
+		if err := applyEnvFileToFlags(flag.CommandLine, data); err != nil {
+			log.Fatalf("failed to apply env file %q: %v", envPath, err)
+		}
+	}
+
 	flag.Parse()
 
 	if *version {
