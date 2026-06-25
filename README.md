@@ -15,16 +15,25 @@ A tool to generate Markdown documentation for PostgreSQL database schemas.
 
 ### Pre-built binaries
 
-Download the archive for your platform from the [GitHub Releases](https://github.com/birkirb/dbdocs/releases) page.
+Download the archive for your platform from the [GitHub Releases](https://github.com/birkirb/dbdocs/releases) page, or use the stable latest URLs below.
 
-| Platform | Archive |
-| --- | --- |
-| Linux (amd64) | `dbdocs_<version>_linux_amd64.tar.gz` |
-| Linux (arm64) | `dbdocs_<version>_linux_arm64.tar.gz` |
-| macOS (amd64) | `dbdocs_<version>_darwin_amd64.tar.gz` |
-| Windows (amd64) | `dbdocs_<version>_windows_amd64.zip` |
+| Platform | Archive | Latest download |
+| --- | --- | --- |
+| Linux (amd64) | `dbdocs_linux_amd64.tar.gz` | [download](https://github.com/birkirb/dbdocs/releases/latest/download/dbdocs_linux_amd64.tar.gz) |
+| Linux (arm64) | `dbdocs_linux_arm64.tar.gz` | [download](https://github.com/birkirb/dbdocs/releases/latest/download/dbdocs_linux_arm64.tar.gz) |
+| macOS (amd64) | `dbdocs_darwin_amd64.tar.gz` | [download](https://github.com/birkirb/dbdocs/releases/latest/download/dbdocs_darwin_amd64.tar.gz) |
+| Windows (amd64) | `dbdocs_windows_amd64.zip` | [download](https://github.com/birkirb/dbdocs/releases/latest/download/dbdocs_windows_amd64.zip) |
 
-Extract the archive and put the `dbdocs` binary on your `PATH`. Verify the download with the `checksums.txt` file published alongside each release.
+Example (Linux amd64):
+
+```bash
+curl -fsSL -o dbdocs.tar.gz \
+  https://github.com/birkirb/dbdocs/releases/latest/download/dbdocs_linux_amd64.tar.gz
+tar -xzf dbdocs.tar.gz dbdocs
+sudo install dbdocs /usr/local/bin/dbdocs
+```
+
+Verify downloads with [checksums.txt](https://github.com/birkirb/dbdocs/releases/latest/download/checksums.txt) from the same release.
 
 ### Via go install
 
