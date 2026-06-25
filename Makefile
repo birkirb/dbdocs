@@ -1,4 +1,4 @@
-VERSION := v1.0.2
+VERSION ?= v1.0.3
 NAME := dbdocs
 
 BUILDSTRING := $(shell git log --pretty=format:'%h' -n 1 2>/dev/null || echo "unknown")
@@ -34,4 +34,7 @@ build_release: clean
 	@echo "Building for windows/amd64..."
 	GOOS=windows GOARCH=amd64 go build -o dist/$(NAME)-windows-amd64.exe -ldflags="$(LDFLAGS)" .
 
-.PHONY: clean tag build_release
+release-snapshot:
+	goreleaser release --snapshot --clean
+
+.PHONY: clean tag build_release release-snapshot

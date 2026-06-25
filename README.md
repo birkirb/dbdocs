@@ -13,12 +13,18 @@ A tool to generate Markdown documentation for PostgreSQL database schemas.
 
 ## Installation
 
-### From Source
+### Pre-built binaries
 
-```bash
-go mod download
-go build -o dbdocs .
-```
+Download the archive for your platform from the [GitHub Releases](https://github.com/birkirb/dbdocs/releases) page.
+
+| Platform | Archive |
+| --- | --- |
+| Linux (amd64) | `dbdocs_<version>_linux_amd64.tar.gz` |
+| Linux (arm64) | `dbdocs_<version>_linux_arm64.tar.gz` |
+| macOS (amd64) | `dbdocs_<version>_darwin_amd64.tar.gz` |
+| Windows (amd64) | `dbdocs_<version>_windows_amd64.zip` |
+
+Extract the archive and put the `dbdocs` binary on your `PATH`. Verify the download with the `checksums.txt` file published alongside each release.
 
 ### Via go install
 
@@ -35,6 +41,13 @@ go install github.com/birkirb/dbdocs@v1.0.0
 ```
 
 **Note:** When installing via `go install`, the version will be automatically detected from git tags. For proper version information, install from a tagged release rather than `@main`.
+
+### From Source
+
+```bash
+go mod download
+go build -o dbdocs .
+```
 
 ## Usage
 
@@ -79,3 +92,23 @@ All content after the `## Notes` section is considered manual documentation and 
 - The `## Notes` section itself
 - Any `## Columns` section
 - Any other custom sections you add
+
+## Releasing
+
+Releases are built and published with [GoReleaser](https://goreleaser.com/) when a version tag is pushed to GitHub.
+
+To cut a new release:
+
+1. Update `VERSION` in the `Makefile` (used for local builds).
+2. Commit and push to `main`.
+3. Create and push a tag: `make tag` or `git tag v1.0.3 && git push origin v1.0.3`.
+
+The release workflow uploads archives for Linux, macOS, and Windows, plus a `checksums.txt` file.
+
+To test a release build locally without publishing:
+
+```bash
+make release-snapshot
+```
+
+Built artifacts are written to `dist/`.
